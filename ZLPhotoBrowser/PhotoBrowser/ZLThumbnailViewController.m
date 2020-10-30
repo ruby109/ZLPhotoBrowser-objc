@@ -22,6 +22,7 @@
 #import "ZLCustomCamera.h"
 #import <MobileCoreServices/MobileCoreServices.h>
 #import "ZLInteractiveAnimateProtocol.h"
+#import <PhotosUI/PhotosUI.h>
 
 typedef NS_ENUM(NSUInteger, SlideSelectType) {
     SlideSelectTypeNone,
@@ -60,6 +61,10 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
 @property (nonatomic, strong) NSMutableArray<NSIndexPath *> *arrSlideIndexPath;
 /**所有滑动经过的indexPath的初始选择状态*/
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *dicOriSelectStatus;
+/**iOS14 适配 Limit 权限用*/
+@property (nonatomic, assign) PHAuthorizationStatus authorizationStatus;
+/***/
+@property (nonatomic, assign) NSInteger offset;
 @end
 
 @implementation ZLThumbnailViewController
@@ -121,7 +126,20 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
         if ([PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite] == PHAuthorizationStatusLimited) {
             [[PHPhotoLibrary sharedPhotoLibrary] registerChangeObserver:self];
         }
+        
+        PHAccessLevel level = PHAccessLevelReadWrite;
+        self.authorizationStatus = [PHPhotoLibrary authorizationStatusForAccessLevel:level];
+    } else {
+        self.authorizationStatus = PHAuthorizationStatusAuthorized;
     }
+    
+    if (@available(iOS 14.0, *)) {
+        self.offset = configuration.allowTakePhotoInLibrary + (self.authorizationStatus == PHAuthorizationStatusLimited);
+    } else {
+        self.offset = configuration.allowTakePhotoInLibrary;
+    }
+    
+    
     
     [self loadPhotos];
 }
@@ -211,7 +229,6 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
 #pragma mark - PHPhotoLibraryChangeObserver
 - (void)photoLibraryDidChange:(PHChange *)changeInstance
 {
-    [PHPhotoLibrary.sharedPhotoLibrary unregisterChangeObserver:self];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.albumListModel refreshResult];
         [self loadPhotos];
@@ -262,9 +279,7 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
     }
     if (self.arrDataSources.count > 0) {
         NSInteger index = self.arrDataSources.count-1;
-        if (self.allowTakePhoto) {
-            index += 1;
-        }
+        index += self.offset;
         [self.collectionView scrollToItemAtIndexPath:[NSIndexPath indexPathForRow:index inSection:0] atScrollPosition:UICollectionViewScrollPositionBottom animated:NO];
     }
 }
@@ -346,6 +361,7 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
     
     [self.collectionView registerClass:NSClassFromString(@"ZLTakePhotoCell") forCellWithReuseIdentifier:@"ZLTakePhotoCell"];
     [self.collectionView registerClass:NSClassFromString(@"ZLCollectionCell") forCellWithReuseIdentifier:@"ZLCollectionCell"];
+    [self.collectionView registerClass:NSClassFromString(@"ZLAddPhotoCell") forCellWithReuseIdentifier:@"ZLAddPhotoCell"];
     //注册3d touch
     if (@available(iOS 9.0, *)) {
         ZLPhotoConfiguration *configuration = [(ZLImageNavigationController *)self.navigationController configuration];
@@ -520,13 +536,13 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
     ZLImageNavigationController *nav = (ZLImageNavigationController *)self.navigationController;
     ZLPhotoConfiguration *configuration = nav.configuration;
     
-    BOOL asc = !self.allowTakePhoto || configuration.sortAscending;
+    BOOL asc = configuration.sortAscending;
     
     if (pan.state == UIGestureRecognizerStateBegan) {
         _beginSelect = !indexPath ? NO : ![cell isKindOfClass:ZLTakePhotoCell.class];
         
         if (_beginSelect) {
-            NSInteger index = asc ? indexPath.row : indexPath.row-1;
+            NSInteger index = asc ? indexPath.row : indexPath.row-self.offset;
             
             ZLPhotoModel *m = self.arrDataSources[index];
             _selectType = m.isSelected ? SlideSelectTypeCancel : SlideSelectTypeSelect;
@@ -685,10 +701,13 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
 
 - (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section
 {
-    if (self.allowTakePhoto) {
-        return self.arrDataSources.count + 1;
+    NSInteger itemsCount = self.arrDataSources.count;
+    itemsCount += self.allowTakePhoto;
+    
+    if (@available(iOS 14.0, *)) {
+        itemsCount += (self.authorizationStatus == PHAuthorizationStatusLimited);
     }
-    return self.arrDataSources.count;
+    return itemsCount;
 }
 
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath
@@ -696,7 +715,7 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
     ZLImageNavigationController *nav = (ZLImageNavigationController *)self.navigationController;
     ZLPhotoConfiguration *configuration = [(ZLImageNavigationController *)self.navigationController configuration];
     
-    if (self.allowTakePhoto && ((configuration.sortAscending && indexPath.row >= self.arrDataSources.count) || (!configuration.sortAscending && indexPath.row == 0))) {
+    if (self.allowTakePhoto && ((configuration.sortAscending && indexPath.row == self.arrDataSources.count) || (!configuration.sortAscending && indexPath.row == 0))) {
         ZLTakePhotoCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"ZLTakePhotoCell" forIndexPath:indexPath];
         cell.layer.masksToBounds = YES;
         cell.layer.cornerRadius = configuration.cellCornerRadio;
@@ -706,14 +725,46 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
         return cell;
     }
     
+    if (@available(iOS 14.0, *)) {
+        if (self.authorizationStatus == PHAuthorizationStatusLimited) {
+            if (self.allowTakePhoto) { //如果有拍照按钮，就为 1 or self.arrDataSources.count + 1
+                if ((configuration.sortAscending && indexPath.row == self.arrDataSources.count + 1) || (!configuration.sortAscending && indexPath.row == 1)) {
+                    ZLAddPhotoCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"ZLAddPhotoCell" forIndexPath:indexPath];
+                    cell.layer.masksToBounds = YES;
+                    cell.layer.cornerRadius = configuration.cellCornerRadio;
+                    return cell;
+                }
+            } else { //如果没有拍照按钮就为 0 or self.arrDataSources.count
+                if ((configuration.sortAscending && indexPath.row == self.arrDataSources.count) || (!configuration.sortAscending && indexPath.row == 0)) {
+                    ZLAddPhotoCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"ZLAddPhotoCell" forIndexPath:indexPath];
+                    cell.layer.masksToBounds = YES;
+                    cell.layer.cornerRadius = configuration.cellCornerRadio;
+                    return cell;
+                }
+            }
+        }
+    }
+    
+    
+    
     ZLCollectionCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"ZLCollectionCell" forIndexPath:indexPath];
     
     ZLPhotoModel *model;
-    if (!self.allowTakePhoto || configuration.sortAscending) {
-        model = self.arrDataSources[indexPath.row];
-    } else {
-        model = self.arrDataSources[indexPath.row-1];
+    if (@available(iOS 14.0, *)) {
+        if (configuration.sortAscending) { //升序在最后不影响 model 选择
+            model = self.arrDataSources[indexPath.row];
+        } else { //降序在最前面，根据是否拍照和是否是 iOS14 的 Limit Status 选择 model
+            model = self.arrDataSources[indexPath.row-self.offset];
+        }
+    } else { //非 iOS14 使用老逻辑
+        if (!self.allowTakePhoto || configuration.sortAscending) {
+            model = self.arrDataSources[indexPath.row];
+        } else {
+            model = self.arrDataSources[indexPath.row-1];
+        }
     }
+    
+    
 
     @zl_weakify(self);
     __weak typeof(cell) weakCell = cell;
@@ -801,11 +852,15 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
             // 拍照cell return
             return;
         }
+        if ([c isKindOfClass:ZLAddPhotoCell.class]) {
+            //iOS14 添加照片按钮 return
+            return;
+        }
         ZLCollectionCell *cell = (ZLCollectionCell *)c;
         
         NSInteger row = obj.row;
-        if (self.allowTakePhoto && !nav.configuration.sortAscending) {
-            row = obj.row - 1;
+        if (!nav.configuration.sortAscending) {
+            row = obj.row - self.offset;
         }
         
         ZLPhotoModel *m = self.arrDataSources[row];
@@ -836,11 +891,15 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
             // 拍照cell return
             return;
         }
+        if ([c isKindOfClass:ZLAddPhotoCell.class]) {
+            //iOS14 添加照片按钮 return
+            return;
+        }
         ZLCollectionCell *cell = (ZLCollectionCell *)c;
         
         NSInteger row = obj.row;
-        if (self.allowTakePhoto && !nav.configuration.sortAscending) {
-            row = obj.row - 1;
+        if (!nav.configuration.sortAscending) {
+            row = obj.row - self.offset;
         }
         
         ZLPhotoModel *m = self.arrDataSources[row];
@@ -884,28 +943,41 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
 {
     ZLPhotoConfiguration *configuration = [(ZLImageNavigationController *)self.navigationController configuration];
     
-    if (self.allowTakePhoto && ((configuration.sortAscending && indexPath.row >= self.arrDataSources.count) || (!configuration.sortAscending && indexPath.row == 0))) {
-        //拍照
+//    if (self.allowTakePhoto && ((configuration.sortAscending && indexPath.row >= self.arrDataSources.count) || (!configuration.sortAscending && indexPath.row == 0))) {
+//        //拍照
+//        [self takePhoto];
+//        return;
+//    }
+    UICollectionViewCell *cell = [collectionView cellForItemAtIndexPath:indexPath];
+    if ([cell isKindOfClass:[ZLTakePhotoCell class]]) {
         [self takePhoto];
         return;
-    }
-    ZLCollectionCell *cell = (ZLCollectionCell *)[collectionView cellForItemAtIndexPath:indexPath];
-    if (!cell.enableSelect) {
+    } else if ([cell isKindOfClass:[ZLAddPhotoCell class]]) {
+        if (@available(iOS 14.0, *)) {
+            [[PHPhotoLibrary sharedPhotoLibrary] presentLimitedLibraryPickerFromViewController: self];
+        }
         return;
+    } else if ([cell isKindOfClass:[ZLCollectionCell class]]) {
+        ZLCollectionCell *cell = (ZLCollectionCell *)[collectionView cellForItemAtIndexPath:indexPath];
+        if (!cell.enableSelect) {
+            return;
+        }
+        
+        NSInteger index = indexPath.row;
+        if (!configuration.sortAscending) {
+            index = indexPath.row - self.offset;
+        }
+        ZLPhotoModel *model = self.arrDataSources[index];
+        
+        if ([self shouldDirectEdit:model]) return;
+        
+        UIViewController *vc = [self getMatchVCWithModel:model];
+        if (vc) {
+            [self showViewController:vc sender:nil];
+        }
     }
     
-    NSInteger index = indexPath.row;
-    if (self.allowTakePhoto && !configuration.sortAscending) {
-        index = indexPath.row - 1;
-    }
-    ZLPhotoModel *model = self.arrDataSources[index];
     
-    if ([self shouldDirectEdit:model]) return;
-    
-    UIViewController *vc = [self getMatchVCWithModel:model];
-    if (vc) {
-        [self showViewController:vc sender:nil];
-    }
 }
 
 - (BOOL)shouldDirectEdit:(ZLPhotoModel *)model
@@ -1146,8 +1218,8 @@ typedef NS_ENUM(NSUInteger, SlideSelectType) {
     ZLPhotoConfiguration *configuration = [(ZLImageNavigationController *)self.navigationController configuration];
     
     NSInteger index = indexPath.row;
-    if (self.allowTakePhoto && !configuration.sortAscending) {
-        index = indexPath.row - 1;
+    if (!configuration.sortAscending) {
+        index = indexPath.row - self.offset;
     }
     ZLPhotoModel *model = self.arrDataSources[index];
     vc.model = model;

@@ -48,3 +48,7 @@
 - (void)restartCapture;
 
 @end
+
+@interface ZLAddPhotoCell: UICollectionViewCell
+
+@end

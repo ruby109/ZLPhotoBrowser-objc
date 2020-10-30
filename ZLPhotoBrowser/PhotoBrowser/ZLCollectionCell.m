@@ -362,3 +362,32 @@
 
 @end
 
+@interface ZLAddPhotoCell ()
+
+@property (nonatomic, strong) UIImageView* imageView;
+
+@end
+
+@implementation ZLAddPhotoCell
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        [self setupUI];
+    }
+    return self;
+}
+
+- (void) setupUI
+{
+    self.imageView = [[UIImageView alloc] initWithImage:GetImageWithName(@"zl_addPhoto")];
+    self.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    CGFloat width = GetViewHeight(self)/3;
+    self.imageView.frame = CGRectMake(0, 0, width, width);
+    self.imageView.center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+    [self.contentView addSubview:self.imageView];
+    self.backgroundColor = [UIColor colorWithWhite:0.8 alpha:1];
+};
+
+@end
